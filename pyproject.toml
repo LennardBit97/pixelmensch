@@ -1,0 +1,13 @@
+[project]
+name = "multishot-gpt-pixel-generator"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "gradio>=5.38.2",
+    "litellm>=1.74.9.post1",
+    "openai>=1.97.1",
+    "pillow>=11.3.0",
+]
