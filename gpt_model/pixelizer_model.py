@@ -31,7 +31,7 @@ class Pixelizer:
             "Blocky, unshaded pixels, no gradients or textures\n"
             "Neutral pose: frontal view, shoulder‑width stance, arms hanging straight down, hands in front of body\n"
             "Light grey background (#d3d3d3), solid color\n"
-            "Facial features stylized: eyes as short lines or dots, simplified mouth, blocky nose\n"
+            "Facial features stylized: eyes as short lines or dots, simplified mouth, no nose\n"
             "Clothing and hair simplified to flat colored shapes\n"
             "No outlines, no detail shading, everything flat and geometric\n\n"
             "Apply this style to the person in the target image:\n"
