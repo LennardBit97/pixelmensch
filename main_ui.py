@@ -4,11 +4,11 @@ from PIL import Image
 import io
 
 import gradio as gr
-from gpt_model.pixelizer_model import Pixelizer
+from gpt_model.pixelizer_model_flux import Pixelizer
 from util.image_operations import load_and_resize
 
 # Instantiate pixelizer
-pixelizer = Pixelizer()
+pixelizer = Pixelizer(ref_count=7, quality="hd")
 
 # Output dir
 OUTPUT_DIR = Path("output")
