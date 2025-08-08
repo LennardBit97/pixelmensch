@@ -28,36 +28,24 @@ class Pixelizer:
         for i in range(ref_count):
             image_path = f"{ref_dir}/{ref_prefix}{i + 1}.png"
             self.ref_images.append(load_and_resize(image_path))
-        # self.prompt = (
-        #     "Convert the person from the target image into the visual style of the reference images.\n\n"
-        #     "Style description (from ref images):\n"
-        #     "Pixel art format, the person is exactly 32 large pixels wide × 64 large pixels high\n"
-        #     "Blocky, unshaded pixels, no gradients or textures\n"
-        #     "Neutral pose: frontal view, shoulder‑width stance, arms hanging straight down, hands in front of body\n"
-        #     "Light grey background (#d3d3d3), solid color\n"
-        #     "Facial features stylized: eyes as short lines or dots, simplified mouth, no nose\n"
-        #     "Clothing and hair simplified to flat colored shapes\n"
-        #     "No outlines, no detail shading, everything flat and geometric\n\n"
-        #     "Apply this style to the person in the target image:\n"
-        #     "Retain their clothing type, hair color/style, facial structure, facial expression, mouth expression, eye color, and accessories\n"
-        #     "Convert everything into the described pixel style\n"
-        #     "Adjust posture and background to match ref images exactly"
-        # )
 
-        self.prompt = """In the image, several pixel characters appear next to a real person.
-            "Convert the real person from the target image into the visual style of the pixel reference images.\n\n"
-            "Style description (from ref images):\n"
-            "Pixel art format, the person is exactly 32 large pixels wide × 64 large pixels high\n"
-            "Blocky, unshaded pixels, no gradients or textures\n"
-            "Neutral pose: frontal view, shoulder‑width stance, arms hanging straight down, hands in front of body\n"
-            "Light grey background (#d3d3d3), solid color\n"
-            "Facial features stylized: eyes as short lines or dots, simplified mouth, no nose\n"
-            "Clothing and hair simplified to flat colored shapes\n"
-            "No outlines, no detail shading, everything flat and geometric\n\n"
-            "Apply this style to the person in the target image:\n"
-            "Retain their clothing type, hair color/style, facial structure, facial expression, mouth expression, eye color, and accessories\n"
-            "Convert everything into the described pixel style\n"
-            "Adjust posture and background to match ref images exactly\"
+        self.prompt = f"""In the image, {ref_count} pixel characters appear next to a real person.
+            Convert the real person from the target image into the visual style of the pixel reference images.
+            Style description, transfer the style of the reference images as much as possible:
+            Pixel art format, the person is exactly 40 large pixels wide × 80 large pixels high
+            Use half pixels for details like slight facial hair and eyebrows.
+            Blocky, unshaded pixels, no gradients or textures
+            Light grey background (#d3d3d3), solid color
+            No outlines, no detail shading, everything flat and geometric
+            Neutral pose: frontal view, shoulder‑width stance, arms hanging straight down, with thumbs in front od the body, feet parallel
+            Facial features stylized, no noses: eyes as short colored lines or colored dots, slight eyebrows,tiny gap between eyes and eyebrows, simplified mouth, NO nose, flat shaded like the reference images
+            Clothing and hair slightly simplified to flat colored shapes
+            
+            Apply this style to the person in the target image:
+            Retain their clothing type, clothing details, hair color/style, facial structure, facial expression, mouth expression, eye color, body type, and accessories
+            Convert everything into the described pixel style
+            Output must contain only one person in the center of the image
+            Adjust posture and background to match ref images exactly
             """
 
     def pixelize(self, target_image, output_path="output.png"):
@@ -70,19 +58,46 @@ class Pixelizer:
         target_image.name = "target.png"
         all_images = [target_image] + self.ref_images
         concat_images = concatenate_images(all_images)
-
         concat_images.seek(0)
+
+        # TODO debug entry
         with open("test.png", "wb") as f:
             f.write(concat_images.read())
-        result = self.client.images.edit(
+
+        stream = self.client.images.edit(
             model=self.model,
             image=concat_images,
             prompt=self.prompt,
             quality=self.quality,
             size=self.size,
+            stream=True,
+            partial_images=3,
         )
-        image_base64 = result.data[0].b64_json
-        image_bytes = base64.b64decode(image_base64)
-        with open(output_path, "wb") as f:
-            f.write(image_bytes)
-        return image_bytes
+
+        for event in stream:
+            print(f"Event: {event.type}")
+            # print([attr for attr in dir(event) if not attr.startswith("__")])
+            if event.type == "image_edit.completed":
+                with open("event_log.txt", "w") as f:
+                    f.write("Event attributes:\n")
+                    f.write(
+                        "\n".join(
+                            [
+                                f"{attr}: {getattr(event, attr)}"
+                                for attr in dir(event)
+                                if not attr.startswith("__")
+                            ]
+                        )
+                    )
+            # if event.type == "image_edit.partial_image":
+            image_base64 = event.b64_json
+            image_bytes = base64.b64decode(image_base64)
+            with open(output_path, "wb") as f:
+                f.write(image_bytes)
+            yield image_bytes
+
+        # image_base64 = result.data[0].b64_json
+        # image_bytes = base64.b64decode(image_base64)
+        # with open(output_path, "wb") as f:
+        #     f.write(image_bytes)
+        # return image_bytes
