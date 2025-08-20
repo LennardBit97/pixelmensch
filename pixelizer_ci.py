@@ -72,7 +72,7 @@ ci_theme = gr.themes.Base(primary_hue="yellow", secondary_hue="slate").set(
 
 # Custom CSS to mirror Cologne‑Intelligence’s clean layouts
 CSS = f"""
-html, body {{ margin:0; padding:0; font-family: sans-serif; }}
+html, body {{ margin:0; padding:0; font-family: sans-serif; overflow:hidden; }}
 .gradio-container {{ width:1920px !important; height:1024px !important; margin:0 auto; overflow:hidden; background:{CI_BG}; color:{CI_TEXT}; }}
 main {{ padding-top:0 !important; }}
 /* Header section */
@@ -118,7 +118,9 @@ button.bg-secondary {{ background:{CI_BG} !important; color:{CI_TEXT} !important
 """
 
 # Build the Gradio interface
-with gr.Blocks(theme=ci_theme, css=CSS, analytics_enabled=False) as pixelator:
+with gr.Blocks(
+    theme=ci_theme, css=CSS, analytics_enabled=False, title="CI-Pixelizer"
+) as pixelator:
     # Header: CI logo and application title
     with gr.Row(elem_id="hdr"):
         with gr.Column(scale=0, elem_classes=["logo-wrapper"]):
@@ -165,4 +167,9 @@ with gr.Blocks(theme=ci_theme, css=CSS, analytics_enabled=False) as pixelator:
 
 # Launch the application when run directly
 if __name__ == "__main__":
-    pixelator.launch(share=False, server_name="0.0.0.0", server_port=7860)
+    pixelator.launch(
+        share=False,
+        server_name="0.0.0.0",
+        server_port=7860,
+        favicon_path="https://www.cologne-intelligence.de/frontend/favicons/apple-touch-icon.png",  # Logo als Icon
+    )
