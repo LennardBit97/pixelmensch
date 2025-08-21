@@ -1,62 +1,219 @@
 """
 Pixelizer application adapted to Cologne Intelligence corporate design.
-
-This version modifies the original Pixelizer UI to align with the light, clean
-corporate style used on Cologne‑Intelligence’s website.  The colour palette
-is derived from their logo: a neutral grey tone (#5F575A) and a bright
-yellow accent (#FFE900) are used for text and primary actions, while panels
-rest on a white background (#FFFFFF) with subtle grey borders (#E6E6E6)【33911874793402†L6-L8】.  The
-application’s header includes the company’s logo (sourced from their public
-favicon) and the Pixelizer title.  Otherwise, the functionality remains
-unchanged.
-
-To run this app, install the required dependencies (gradio, Pillow and
-pixelizer_model) and execute the script.  When launched, open the provided
-URL in your browser to interact with the Pixelizer.
+(Hardening/Resilience edition)
 """
 
 import uuid
 from pathlib import Path
-from PIL import Image
+from typing import Generator, Optional, Tuple
+from PIL import Image, UnidentifiedImageError
 import io
+import os
 
 import gradio as gr
 from gpt_model.pixelizer_model import Pixelizer
 from util.image_operations import load_and_resize
 
 # Instantiate Pixelizer with the same settings as the original app.
-pixelizer = Pixelizer(ref_count=7, quality="medium")
+# Defensive: Falls Konstruktor scheitert, später im Handler behandeln.
+try:
+    pixelizer = Pixelizer(ref_count=7, quality="medium")
+except Exception as e:
+    pixelizer = None  # Wird im Handler geprüft
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# --- Resilience / Validation configuration (anpassbar) ---
+ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+MAX_INPUT_BYTES = 25 * 1024 * 1024  # 25 MB, optional
+MAX_OUTPUT_BYTES = 50 * 1024 * 1024  # 50 MB, optional
 
-def process_image(image_file):
-    """Generate a pixelized version of an uploaded image.
 
-    The incoming file is read as RGBA, resized using util.image_operations
-    and passed through the pixelizer model.  The function yields PIL Images
-    incrementally, allowing Gradio to update the UI as pixels are processed.
+def _is_pathlike_image(path_str: str) -> bool:
+    if not path_str or not isinstance(path_str, str):
+        return False
+    ext = Path(path_str).suffix.lower()
+    return ext in ALLOWED_EXTS and Path(path_str).exists()
+
+
+def _safe_open_image_as_rgba(path_str: str) -> Image.Image:
     """
-    image = Image.open(image_file).convert("RGBA")
+    Öffnet Bild robust, verifiziert es und konvertiert nach RGBA.
+    Raises Exception bei Problemen.
+    """
+    # Optional: Größe prüfen (nur bei lokalen Pfaden sinnvoll)
+    try:
+        if os.path.isfile(path_str):
+            size = os.path.getsize(path_str)
+            if size > MAX_INPUT_BYTES:
+                raise ValueError(
+                    f"Die Datei ist zu groß ({size // (1024 * 1024)} MB). "
+                    f"Maximal erlaubt sind {MAX_INPUT_BYTES // (1024 * 1024)} MB."
+                )
+    except Exception:
+        # Bei Zugriffsfeldern nicht hart abbrechen – wir versuchen trotzdem zu öffnen.
+        pass
+
+    try:
+        with Image.open(path_str) as img_probe:
+            # Korrupte Dateien früh erkennen
+            img_probe.verify()
+        # verify() schließt die Datei; neu öffnen zum eigentlichen Laden
+        img = Image.open(path_str).convert("RGBA")
+        return img
+    except UnidentifiedImageError:
+        raise ValueError("Die angegebene Datei ist kein gültiges Bild.")
+    except OSError:
+        raise ValueError("Das Bild konnte nicht gelesen werden (I/O-Fehler).")
+
+
+def _safe_save_bytes_to_rgba_image(image_bytes: bytes) -> Image.Image:
+    """
+    Bytes -> PIL Image (RGBA) mit defensiver Prüfung.
+    """
+    try:
+        if image_bytes is None:
+            raise ValueError("Leerer Bild-Chunk vom Modell erhalten.")
+        if len(image_bytes) > MAX_OUTPUT_BYTES:
+            raise ValueError(
+                "Generiertes Bild ist unerwartet groß. Vorgang wird abgebrochen."
+            )
+        bio = io.BytesIO(image_bytes)
+        img = Image.open(bio).convert("RGBA")
+        return img
+    except UnidentifiedImageError:
+        raise ValueError("Ungültige Bilddaten vom Modell erhalten.")
+    except OSError:
+        raise ValueError("Fehler beim Dekodieren der generierten Bilddaten.")
+
+
+def _prepare_resized_png_bytes(pil_img_rgba: Image.Image) -> io.BytesIO:
+    """
+    Speichert ein PIL‑Bild als PNG in BytesIO (z. B. für load_and_resize).
+    """
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    pil_img_rgba.save(buf, format="PNG")
     buf.seek(0)
-    resized = load_and_resize(buf)
+    return buf
 
-    output_name = f"pixelized_{uuid.uuid4().hex[:8]}.png"
-    output_path = OUTPUT_DIR / output_name
 
-    for image_bytes in pixelizer.pixelize(resized, output_path=str(output_path)):
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-        yield img
+def process_image(
+    image_file: Optional[str],
+) -> Generator[Optional[Image.Image], None, None]:
+    """
+    Generate a pixelized version of an uploaded image.
+
+    Defensive version:
+    - Validiert input
+    - Fängt Fehler in load_and_resize und im Pixelizer ab
+    - Gibt Nutzer‑Meldungen über Gradio‑Toasts aus
+    - Liefert bei Fehlern kein Bild (None), sodass die UI konsistent bleibt
+    """
+    # 1) Basic input checks
+    if not image_file:
+        gr.Warning("Bitte ein Bild auswählen oder hochladen.")
+        yield None
+        return
+
+    if not _is_pathlike_image(image_file):
+        gr.Warning("Die ausgewählte Datei scheint kein unterstütztes Bild zu sein.")
+        # Versuche dennoch zu öffnen – ggf. handelt es sich um eine temporäre Webcam‑Datei ohne Endung
+        # Bei Fehler bricht _safe_open_image_as_rgba mit klarer Meldung ab.
+    try:
+        image_rgba = _safe_open_image_as_rgba(image_file)
+    except Exception as e:
+        gr.Error(f"Eingabefehler: {e}")
+        yield None
+        return
+
+    # 2) Resize / Pre‑process defensively
+    try:
+        buf_png = _prepare_resized_png_bytes(image_rgba)
+        resized = load_and_resize(buf_png)
+        if resized is None:
+            raise ValueError("Bild konnte nicht skaliert/verarbeitet werden.")
+    except Exception as e:
+        gr.Error(f"Vorverarbeitung fehlgeschlagen: {e}")
+        yield None
+        return
+
+    # 3) Output Pfad vorbereiten
+    try:
+        output_name = f"pixelized_{uuid.uuid4().hex[:8]}.png"
+        output_path = OUTPUT_DIR / output_name
+        # Schreibprobe optional:
+        with open(output_path, "wb") as fp:
+            pass
+        # Datei wieder entfernen – Modell wird sie gleich befüllen.
+        try:
+            output_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    except Exception:
+        # Fallback: in RAM arbeiten, kein persistentes Ziel
+        output_path = None
+
+    # 4) Pixelizer ausführen (robust)
+    if pixelizer is None:
+        gr.Error("Das Pixelizer‑Modell konnte nicht initialisiert werden.")
+        yield None
+        return
+
+    try:
+        iterator = pixelizer.pixelize(
+            resized,
+            output_path=str(output_path) if output_path else None,
+        )
+
+        # Falls der Pixelizer wider Erwarten nichts liefert, Nutzer informieren
+        got_any = False
+        for image_bytes in iterator:
+            got_any = True
+            try:
+                img = _safe_save_bytes_to_rgba_image(image_bytes)
+            except Exception as chunk_err:
+                # Einzelne fehlerhafte Chunks überspringen; weiter versuchen
+                gr.Warning(f"Ein Zwischenschritt war ungültig: {chunk_err}")
+                continue
+            yield img
+
+        if not got_any:
+            gr.Error("Das Modell hat keine Ausgabe erzeugt.")
+            yield None
+            return
+
+    except FileNotFoundError as e:
+        gr.Error(f"Dateifehler während der Pixelisierung: {e}")
+        yield None
+        return
+    except MemoryError:
+        gr.Error("Nicht genügend Speicher während der Verarbeitung.")
+        yield None
+        return
+    except Exception as e:
+        gr.Error(f"Unerwarteter Fehler bei der Pixelisierung: {e}")
+        yield None
+        return
+
+
+def safe_reset() -> Tuple[None, None]:
+    """
+    Defensive Reset‑Funktion, die unabhängig vom Zustand immer ein leeres UI herstellt.
+    """
+    try:
+        # Hier könnten temporäre Dateien gelöscht werden (optional).
+        pass
+    except Exception:
+        pass
+    return None, None
 
 
 # Corporate colour definitions derived from Cologne‑Intelligence branding
-CI_TEXT = "#5F575A"  # neutral dark grey for copy and headings【33911874793402†L6-L8】
-CI_ACCENT = "#FFE900"  # bright yellow accent colour matching the bracket in the logo【33911874793402†L6-L8】
-CI_BG = "#FFFFFF"  # white background for panels and overall page
-CI_BORDER = "#E6E6E6"  # light grey borders separating panels
+CI_TEXT = "#5F575A"  # neutral dark grey for copy and headings
+CI_ACCENT = "#FFE900"  # bright yellow accent
+CI_BG = "#FFFFFF"  # white background
+CI_BORDER = "#E6E6E6"  # light grey borders
 
 # Define a light Gradio theme reflecting CI’s look & feel
 ci_theme = gr.themes.Base(primary_hue="yellow", secondary_hue="slate").set(
@@ -88,11 +245,11 @@ main {{ padding-top:0 !important; }}
 .panel {{ background:{CI_BG}; border:1px solid {CI_BORDER}; border-radius:16px; padding:14px; display:flex; flex-direction:column; }}
 .panel h3 {{ margin:0 0 10px 0; font-weight:600; color:{CI_TEXT}; font-size:16px; }}
 
-.equal {{ 
-    flex:1; 
-    display:flex; 
-    align-items:center; 
-    justify-content:center; 
+.equal {{
+    flex:1;
+    display:flex;
+    align-items:center;
+    justify-content:center;
     width:460px;
     margin:auto;
 }}
@@ -124,12 +281,12 @@ with gr.Blocks(
     # Header: CI logo and application title
     with gr.Row(elem_id="hdr"):
         with gr.Column(scale=0, elem_classes=["logo-wrapper"]):
-            # Use the public favicon as the logo.  If an alternative PNG is available,
-            # replace the src attribute accordingly.
             gr.HTML(
-                f'<div class="logo-wrapper"><img alt="CI Logo" src="https://www.cologne-intelligence.de/frontend/favicons/apple-touch-icon.png" />'
-                f"<h1>Pixelizer</h1></div>"
+                '<div class="logo-wrapper">'
+                '<img alt="CI Logo" src="https://www.cologne-intelligence.de/frontend/favicons/apple-touch-icon.png" />'
+                "<h1>Pixelizer</h1></div>"
             )
+
     # Stage: input, output and controls
     with gr.Row(elem_id="stage"):
         # INPUT panel
@@ -161,15 +318,25 @@ with gr.Blocks(
         pixelize_btn = gr.Button("Pixelize", variant="primary")
         reset_btn = gr.Button("Reset", variant="secondary")
 
-    # Bind actions
+    # Bind actions (robust)
     pixelize_btn.click(fn=process_image, inputs=orig_display, outputs=pixel_display)
-    reset_btn.click(fn=lambda: (None, None), outputs=[orig_display, pixel_display])
+    reset_btn.click(fn=safe_reset, outputs=[orig_display, pixel_display])
 
 # Launch the application when run directly
 if __name__ == "__main__":
-    pixelator.launch(
-        share=False,
-        server_name="0.0.0.0",
-        server_port=7860,
-        favicon_path="https://www.cologne-intelligence.de/frontend/favicons/apple-touch-icon.png",  # Logo als Icon
-    )
+    try:
+        pixelator.launch(
+            share=False,
+            server_name="0.0.0.0",
+            server_port=int(os.environ.get("PORT", 7860)),
+            favicon_path="https://www.cologne-intelligence.de/frontend/favicons/apple-touch-icon.png",
+        )
+    except OSError as e:
+        # Falls Port belegt ist – automatischer Fallback
+        gr.Warning(f"Standardport belegt, weiche auf Port 0 aus: {e}")
+        pixelator.launch(
+            share=False,
+            server_name="0.0.0.0",
+            server_port=0,
+            favicon_path="https://www.cologne-intelligence.de/frontend/favicons/apple-touch-icon.png",
+        )

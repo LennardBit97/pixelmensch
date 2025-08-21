@@ -12,3 +12,5 @@ wheels/
 .env
 output/*
 
+event_log.txt
+test.png
